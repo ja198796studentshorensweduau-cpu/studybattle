@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react';
 import { useGameState } from './hooks/useGameState';
 import { isQuestionsLoaded } from './data/questions';
-import { StudyMon } from './data/pokemon';
+import { StudyMon, getDisplayName } from './data/pokemon';
 import TitleScreen from './components/TitleScreen';
 import OverworldScreen from './components/OverworldScreen';
 import BattleScreen from './components/BattleScreen';
 import StatsPage from './components/StatsPage';
 import PartyScreen from './components/PartyScreen';
+import StudyMode from './components/StudyMode';
+import DexScreen from './components/DexScreen';
+import ReplayViewer from './components/ReplayViewer';
+import { getLastReplay } from './utils/replay';
 
 function LevelUpOverlay({ level, monName, monEmoji, onClose }: { level: number; monName: string; monEmoji: string; onClose: () => void }) {
   useEffect(() => {
@@ -15,15 +19,14 @@ function LevelUpOverlay({ level, monName, monEmoji, onClose }: { level: number; 
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 animate-[fadeIn_0.3s_ease-out]" onClick={onClose}>
-      <div className="bg-gradient-to-b from-yellow-900/90 to-amber-900/90 border-4 border-yellow-400 rounded-2xl p-8 text-center shadow-2xl shadow-yellow-500/30 animate-[bounceIn_0.5s_ease-out]">
-        <div className="text-6xl mb-3 animate-bounce">{monEmoji}</div>
-        <div className="text-yellow-300 font-mono text-sm mb-1">🎉 Congratulations! 🎉</div>
-        <div className="text-white font-mono font-black text-2xl mb-1">{monName}</div>
-        <div className="text-yellow-400 font-mono text-xl">
-          grew to <span className="text-3xl font-black text-yellow-300">Lv.{level}</span>!
-        </div>
-        <div className="text-gray-400 font-mono text-xs mt-4">Tap to continue</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
+      <div className="text-center" style={{ animation: 'bounceIn 0.6s ease-out' }}>
+        <div className="text-7xl mb-4">{monEmoji}</div>
+        <p className="text-yellow-400 font-mono text-xl font-bold mb-2">🎉 Congratulations! 🎉</p>
+        <p className="text-white font-mono text-lg">
+          {monName} grew to <span className="text-yellow-400 font-bold">Lv.{level}</span>!
+        </p>
+        <p className="text-gray-500 font-mono text-xs mt-4">Tap to continue</p>
       </div>
     </div>
   );
@@ -36,13 +39,12 @@ function CaptureOverlay({ mon, onClose }: { mon: StudyMon; onClose: () => void }
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 animate-[fadeIn_0.3s_ease-out]" onClick={onClose}>
-      <div className="bg-gradient-to-b from-purple-900/90 to-indigo-900/90 border-4 border-purple-400 rounded-2xl p-8 text-center shadow-2xl shadow-purple-500/30 animate-[bounceIn_0.5s_ease-out]">
-        <div className="text-6xl mb-3">{mon.emoji}</div>
-        <div className="text-purple-300 font-mono text-sm mb-1">🎣 Rescued!</div>
-        <div className="text-white font-mono font-black text-2xl mb-1">{mon.name}</div>
-        <div className="text-purple-400 font-mono text-sm">joined your party!</div>
-        <div className="text-gray-400 font-mono text-xs mt-4">Tap to continue</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
+      <div className="text-center" style={{ animation: 'bounceIn 0.6s ease-out' }}>
+        <div className="text-7xl mb-4">{mon.emoji}</div>
+        <p className="text-green-400 font-mono text-xl font-bold mb-2">🎣 Rescued!</p>
+        <p className="text-white font-mono text-lg">{mon.name} joined your party!</p>
+        <p className="text-gray-500 font-mono text-xs mt-4">Tap to continue</p>
       </div>
     </div>
   );
@@ -55,17 +57,19 @@ function BattleTransition({ onDone }: { onDone: () => void }) {
   }, [onDone]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black animate-[battleFlash_0.8s_ease-in-out]">
-      <style>{`
-        @keyframes battleFlash {
-          0% { opacity: 0; }
-          20% { opacity: 1; }
-          40% { opacity: 0; }
-          60% { opacity: 1; }
-          80% { opacity: 0; }
-          100% { opacity: 1; }
-        }
-      `}</style>
+    <div className="fixed inset-0 z-50 bg-black" style={{ animation: 'battleFlash 0.8s ease-in-out' }}>
+      <style>
+        {`
+          @keyframes battleFlash {
+            0% { opacity: 0; }
+            20% { opacity: 1; }
+            40% { opacity: 0; }
+            60% { opacity: 1; }
+            80% { opacity: 0; }
+            100% { opacity: 1; }
+          }
+        `}
+      </style>
     </div>
   );
 }
@@ -83,12 +87,19 @@ export default function App() {
     removeFromParty,
     recordAnswer,
     recordBattleResult,
+    renameActiveMon,
+    renamePartyMon,
+    recordEncounter,
+    recordCapture,
   } = useGameState();
 
   const [levelUpInfo, setLevelUpInfo] = useState<{ level: number; name: string; emoji: string } | null>(null);
   const [capturedMon, setCapturedMon] = useState<StudyMon | null>(null);
   const [showTransition, setShowTransition] = useState(false);
   const [pendingScreen, setPendingScreen] = useState<'battle' | null>(null);
+  const [showStudyMode, setShowStudyMode] = useState(false);
+  const [showDex, setShowDex] = useState(false);
+  const [showReplay, setShowReplay] = useState(false);
 
   const goToBattle = () => {
     setShowTransition(true);
@@ -108,12 +119,7 @@ export default function App() {
   }
 
   if (capturedMon) {
-    return (
-      <CaptureOverlay
-        mon={capturedMon}
-        onClose={() => setCapturedMon(null)}
-      />
-    );
+    return <CaptureOverlay mon={capturedMon} onClose={() => setCapturedMon(null)} />;
   }
 
   if (levelUpInfo) {
@@ -131,6 +137,32 @@ export default function App() {
     return <TitleScreen onLoadGame={loadGame} onNewGame={startNewGame} />;
   }
 
+  if (showStudyMode) {
+    return (
+      <StudyMode
+        onBack={() => setShowStudyMode(false)}
+        onRecordAnswer={recordAnswer}
+      />
+    );
+  }
+
+  if (showDex) {
+    return (
+      <DexScreen
+        gameData={gameData}
+        onBack={() => setShowDex(false)}
+      />
+    );
+  }
+
+  if (showReplay) {
+    const replay = getLastReplay();
+    if (replay) {
+      return <ReplayViewer initialReplay={replay} onClose={() => setShowReplay(false)} />;
+    }
+    setShowReplay(false);
+  }
+
   if (screen === 'battle') {
     return (
       <BattleScreen
@@ -138,12 +170,11 @@ export default function App() {
         onBattleEnd={(won, xp, captured) => {
           const prevLevel = gameData.level;
           recordBattleResult(won);
-          
           if (captured) {
             addToParty(captured, gameData.level);
+            recordCapture(captured.id);
             setCapturedMon(captured);
           }
-          
           if (xp > 0) {
             addXp(xp);
             setTimeout(() => {
@@ -157,7 +188,7 @@ export default function App() {
               if (testLevel > prevLevel) {
                 setLevelUpInfo({
                   level: testLevel,
-                  name: gameData.activeMon.name,
+                  name: getDisplayName(gameData.activeMon),
                   emoji: gameData.activeMon.emoji,
                 });
               }
@@ -166,29 +197,26 @@ export default function App() {
           setScreen('overworld');
         }}
         onRecordAnswer={recordAnswer}
-        onSwapIn={(partyIndex) => {
-          const member = gameData.party[partyIndex];
-          if (member) {
-            setActiveMon(member.mon);
-            removeFromParty(partyIndex);
-            return member.mon;
-          }
-          return null;
-        }}
+        onRecordEncounter={recordEncounter}
       />
     );
   }
 
   if (screen === 'stats') {
-    return <StatsPage gameData={gameData} onBack={() => setScreen('overworld')} />;
+    return (
+      <StatsPage
+        gameData={gameData}
+        onBack={() => setScreen('overworld')}
+        onStudyMode={() => setShowStudyMode(true)}
+      />
+    );
   }
 
   if (screen === 'party') {
     return (
       <PartyScreen
         gameData={gameData}
-        onSetActive={(mon, partyIndex) => {
-          // Swap: current active goes to party, selected becomes active
+        onSwap={(mon, partyIndex) => {
           const currentActive = gameData.activeMon;
           setActiveMon(mon);
           removeFromParty(partyIndex);
@@ -197,6 +225,8 @@ export default function App() {
         onRelease={(partyIndex) => {
           removeFromParty(partyIndex);
         }}
+        onRenameActive={renameActiveMon}
+        onRenameParty={renamePartyMon}
         onBack={() => setScreen('overworld')}
       />
     );
@@ -208,6 +238,8 @@ export default function App() {
       onBattle={goToBattle}
       onStats={() => setScreen('stats')}
       onParty={() => setScreen('party')}
+      onDex={() => setShowDex(true)}
+      onReplay={() => setShowReplay(true)}
       onTitle={() => setScreen('title')}
     />
   );
