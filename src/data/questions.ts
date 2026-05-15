@@ -1,4 +1,10 @@
-export type QuestionType = 'multiple_choice' | 'short_answer' | 'grid_click';
+export type QuestionType = 'multiple_choice' | 'short_answer' | 'grid_click' | 'extended_response';
+
+export interface ExtendedResponseData {
+  keyPoints: string[];
+  markingScheme: string;
+  maxMarks: number;
+}
 
 export interface Question {
   id: string;
@@ -16,6 +22,7 @@ export interface Question {
     gridLabel: string;
     tolerance: number;
   };
+  extendedResponse?: ExtendedResponseData;
 }
 
 // ---- runtime question store ----
@@ -39,15 +46,12 @@ export function loadQuestionsFromJSON(data: unknown): string | null {
   if (!Array.isArray(data)) return 'JSON must be an array of question objects.';
   if (data.length === 0) return 'JSON array is empty – add at least one question.';
 
-  const validTypes: QuestionType[] = ['multiple_choice', 'short_answer', 'grid_click'];
+  const validTypes: QuestionType[] = ['multiple_choice', 'short_answer', 'grid_click', 'extended_response'];
   const parsed: Question[] = [];
   const catSet = new Set<string>();
 
   for (let i = 0; i < data.length; i++) {
-    const raw = data[i];
-    if (!raw || typeof raw !== 'object') return `Item ${i} is not an object.`;
-
-    const q = raw as Record<string, unknown>;
+    const q = data[i] as Record<string, unknown>;
 
     // id – auto-generate if missing
     const id = typeof q.id === 'string' && q.id.length > 0 ? q.id : `q${i + 1}`;
@@ -78,7 +82,7 @@ export function loadQuestionsFromJSON(data: unknown): string | null {
     // options for multiple choice
     if (type === 'multiple_choice') {
       if (!Array.isArray(q.options) || q.options.length < 2)
-        return `Item ${i}: multiple_choice needs "options" array with at least 2 items.`;
+        return `Item ${i}: multiple_choice needs at least 2 "options".`;
       if (!q.options.every((o: unknown) => typeof o === 'string'))
         return `Item ${i}: all "options" must be strings.`;
     }
@@ -90,6 +94,17 @@ export function loadQuestionsFromJSON(data: unknown): string | null {
       const gd = q.gridData as Record<string, unknown>;
       if (typeof gd.targetX !== 'number' || typeof gd.targetY !== 'number')
         return `Item ${i}: gridData needs numeric "targetX" and "targetY".`;
+    }
+
+    // extendedResponse for extended_response
+    if (type === 'extended_response') {
+      if (!q.extendedResponse || typeof q.extendedResponse !== 'object')
+        return `Item ${i}: extended_response needs an "extendedResponse" object.`;
+      const er = q.extendedResponse as Record<string, unknown>;
+      if (!Array.isArray(er.keyPoints) || er.keyPoints.length === 0)
+        return `Item ${i}: extendedResponse needs a non-empty "keyPoints" array.`;
+      if (typeof er.markingScheme !== 'string' || er.markingScheme.length === 0)
+        return `Item ${i}: extendedResponse needs a "markingScheme" string.`;
     }
 
     // explanation – optional, default ''
@@ -120,6 +135,16 @@ export function loadQuestionsFromJSON(data: unknown): string | null {
                   : 0,
             }
           : undefined,
+      extendedResponse:
+        type === 'extended_response' && q.extendedResponse
+          ? {
+              keyPoints: (q.extendedResponse as Record<string, unknown>).keyPoints as string[],
+              markingScheme: (q.extendedResponse as Record<string, unknown>).markingScheme as string,
+              maxMarks: typeof (q.extendedResponse as Record<string, unknown>).maxMarks === 'number'
+                ? ((q.extendedResponse as Record<string, unknown>).maxMarks as number)
+                : (q.extendedResponse as Record<string, unknown> & { keyPoints: string[] }).keyPoints?.length || 3,
+            }
+          : undefined,
     });
   }
 
@@ -136,7 +161,21 @@ export function loadQuestionsFromJSON(data: unknown): string | null {
   return null;
 }
 
-export function getRandomQuestion(excludeIds: string[] = [], categories?: string[]): Question {
+/**
+ * Pick a random question, weighted so that questions the player has
+ * answered incorrectly (or never seen) are more likely to appear.
+ *
+ * @param excludeIds   IDs already used this battle (avoid repeats)
+ * @param categories   optional category filter
+ * @param answerHistory  the player's full questionsAnswered array —
+ *                       used to compute per-question accuracy and bias
+ *                       towards weaker questions
+ */
+export function getRandomQuestion(
+  excludeIds: string[] = [],
+  categories?: string[],
+  answerHistory?: { questionId: string; correct: boolean }[],
+): Question {
   let pool = _questions.filter((q) => !excludeIds.includes(q.id));
   if (categories && categories.length > 0) {
     pool = pool.filter((q) => categories.includes(q.category));
@@ -145,5 +184,39 @@ export function getRandomQuestion(excludeIds: string[] = [], categories?: string
     pool = categories ? _questions.filter((q) => categories.includes(q.category)) : [..._questions];
   }
   if (pool.length === 0) pool = [..._questions]; // ultimate fallback
-  return pool[Math.floor(Math.random() * pool.length)];
+
+  // If no history, pure random
+  if (!answerHistory || answerHistory.length === 0) {
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  // Build per-question accuracy map
+  const stats = new Map<string, { correct: number; total: number }>();
+  for (const r of answerHistory) {
+    if (!stats.has(r.questionId)) stats.set(r.questionId, { correct: 0, total: 0 });
+    const s = stats.get(r.questionId)!;
+    s.total++;
+    if (r.correct) s.correct++;
+  }
+
+  // Assign weights:
+  //   never seen       → weight 3   (highest priority)
+  //   0% accuracy      → weight 3
+  //   50% accuracy     → weight 2
+  //   100% accuracy    → weight 1   (lowest, but still possible)
+  const weights = pool.map((q) => {
+    const s = stats.get(q.id);
+    if (!s) return 3;                          // never attempted
+    const accuracy = s.correct / s.total;      // 0..1
+    return 3 - accuracy * 2;                   // 3 → 1
+  });
+
+  // Weighted random pick
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  let roll = Math.random() * totalWeight;
+  for (let i = 0; i < pool.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return pool[i];
+  }
+  return pool[pool.length - 1];
 }
